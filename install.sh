@@ -348,21 +348,23 @@ partition_and_mount() {
   [ -n "$P_SWAP" ] && [ "$LUKS" = no ] && run mkswap -L swap "$P_SWAP"
   if [ "$FS" = ext4 ]; then
     run mkfs.ext4 -F -L nixos "$ROOT_DEV"
-    run mount "$ROOT_DEV" /mnt
+    run udevadm settle
+    run mount -t ext4 "$ROOT_DEV" /mnt
   else
     run mkfs.btrfs -f -L nixos "$ROOT_DEV"
-    run mount "$ROOT_DEV" /mnt
+    run udevadm settle
+    run mount -t btrfs "$ROOT_DEV" /mnt
     run btrfs subvolume create /mnt/@
     run btrfs subvolume create /mnt/@home
     run btrfs subvolume create /mnt/@nix
     run umount /mnt
-    run mount -o subvol=@,compress=zstd,noatime "$ROOT_DEV" /mnt
+    run mount -t btrfs -o subvol=@,compress=zstd,noatime "$ROOT_DEV" /mnt
     run mkdir -p /mnt/home /mnt/nix
-    run mount -o subvol=@home,compress=zstd,noatime "$ROOT_DEV" /mnt/home
-    run mount -o subvol=@nix,compress=zstd,noatime "$ROOT_DEV" /mnt/nix
+    run mount -t btrfs -o subvol=@home,compress=zstd,noatime "$ROOT_DEV" /mnt/home
+    run mount -t btrfs -o subvol=@nix,compress=zstd,noatime "$ROOT_DEV" /mnt/nix
   fi
   run mkdir -p /mnt/boot
-  if [ -n "$P_ESP" ]; then run mount -o umask=0077 "$P_ESP" /mnt/boot; else run mount "$P_BOOT" /mnt/boot; fi
+  if [ -n "$P_ESP" ]; then run mount -t vfat -o umask=0077 "$P_ESP" /mnt/boot; else run mount -t ext4 "$P_BOOT" /mnt/boot; fi
   [ -n "$P_SWAP" ] && [ "$LUKS" = no ] && run swapon "$P_SWAP"
   return 0
 }
