@@ -1,5 +1,12 @@
 # nixos-installer
 
+Two scripts:
+
+- **`install.sh`** runs from the NixOS live ISO, wipes a disk and installs NixOS with niri + SDDM.
+- **`post-install.sh`** runs on an installed NixOS and installs r3dg0d's repos **system-wide**
+  (declaratively, via `environment.systemPackages`). `install.sh` schedules it for first boot by
+  default.
+
 An open-source NixOS installer script. Run it from the official NixOS live ISO and it
 partitions a disk, installs NixOS with the **niri** Wayland compositor started from **SDDM**, and
 clones every public repo of [r3dg0d](https://github.com/r3dg0d) into `~/src`.
@@ -55,7 +62,8 @@ To pin an exact version, replace `main` in the URL with a commit SHA.
 | `--github-user NAME` | `NI_GITHUB_USER` | `r3dg0d` | Whose public repos to clone |
 | `--repos a,b,c` | `NI_REPOS` | all public non-fork repos | Explicit list instead of the GitHub API |
 | `--no-repos` | `NI_CLONE_REPOS=no` | | Clone nothing |
-| `--build-repos` / `--no-build-repos` | `NI_BUILD_REPOS` | on | Install flake packages from the repos on first boot |
+| `--system-repos` / `--no-system-repos` | `NI_SYSTEM_REPOS` | on | First boot: run `post-install.sh` as root (system-wide packages) |
+| `--build-repos` / `--no-build-repos` | `NI_BUILD_REPOS` | off | First boot: install flake packages into the user's Nix profile instead/as well |
 | `--confirm-wipe DEV` | `NI_CONFIRM_WIPE` | | Unattended wipe confirmation; must equal `--disk` |
 | `--defaults` | | | Use defaults for anything not given (disk, user, password still required) |
 | `--dry-run` | | | Print the plan and the generated config; change nothing |
@@ -88,16 +96,51 @@ sudo NI_PASSWORD='change-me' bash install.sh --disk /dev/nvme0n1 --confirm-wipe 
    - systemd-boot (UEFI) or GRUB (BIOS)
 5. **Clones repos** into `/home/<user>/src/` using the unauthenticated GitHub API (paged, public,
    non-fork). A failed clone is logged and skipped.
-6. Writes `~/src/install-repos.sh` and a one-shot `r3dg0d-install-repos.service`. On first boot,
-   once the network is up, it runs as your user and installs the default package of every repo
-   with a `flake.nix` into your Nix profile. Repos without packages are skipped and failures are
-   logged to `~/src/install-repos.log` without stopping the rest. It runs once; re-run by hand
-   with `~/src/install-repos.sh`.
+6. Saves `post-install.sh` as `/etc/nixos/r3dg0d-post-install.sh` and adds a one-shot
+   `r3dg0d-post-install.service`. On first boot, once the network is up, it runs as root and
+   installs the repos system-wide (see below). It runs once; log `/var/log/r3dg0d-post-install.log`.
+   With `--build-repos`, the older per-user mode is also set up: `~/src/install-repos.sh` and
+   `r3dg0d-install-repos.service` install each flake's default package into your Nix profile.
 7. Runs `nixos-install --no-root-passwd`, sets the user password, and saves the log to
    `/var/log/r3dg0d-installer.log` on the new system.
 
 There is no root password; use `sudo` as your user. After boot, edit
 `/etc/nixos/configuration.nix` and run `sudo nixos-rebuild switch`.
+
+## post-install.sh: repos system-wide
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/r3dg0d/nixos-installer/main/post-install.sh | sudo bash
+```
+
+For every public non-fork repo of the GitHub user (or `--repos a,b,c`):
+
+1. Clones it to `/opt/r3dg0d/src/<repo>`, or `git pull --ff-only` if it is already there.
+2. Detects what it provides: flake `packages.<system>.default` (or every named package when there
+   is no default), otherwise `package.nix` / `default.nix` via `callPackage`. `nixosModules` are
+   reported but not enabled.
+3. **Builds each package on its own.** A repo that fails to build is left out and logged, so one
+   broken repo never breaks your system rebuild.
+4. Writes `/etc/nixos/r3dg0d-repos.nix` listing only the packages that built, checks it evaluates,
+   adds `./r3dg0d-repos.nix` to `imports` in `configuration.nix` (once; a backup is kept as
+   `configuration.nix.bak-r3dg0d`) and runs `nixos-rebuild switch`.
+5. Prints included / skipped / failed per repo. Log: `/var/log/r3dg0d-post-install.log`.
+
+Re-run it any time to pull updates and rebuild. Options:
+
+| Flag | Meaning |
+|------|---------|
+| `--repos a,b,c` | Only these repos |
+| `--github-user NAME` | Default `r3dg0d`. Set `GITHUB_TOKEN` to avoid the 60 requests/hour API limit |
+| `--include-all` | Also include `r3dg0d`, `r3dg0d.github.io`, `dotfiles`, `nixos-installer` (skipped by default) |
+| `--src-dir DIR` | Clone location (default `/opt/r3dg0d/src`) |
+| `--no-update` | Don't pull repos that already exist |
+| `--no-switch` | Build and write the module, but don't edit `configuration.nix` or rebuild |
+
+Notes: flake packages are pulled in with `builtins.getFlake "git+file:///opt/r3dg0d/src/<repo>"`,
+so they use each repo's own pinned nixpkgs (`flake.lock`); `callPackage` repos use the system
+channel. If `/etc/nixos` is itself a flake, the script writes the module and tells you to add it
+to your `modules` and rebuild with `--impure`.
 
 ## niri basics
 

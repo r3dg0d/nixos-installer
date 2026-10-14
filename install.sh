@@ -27,7 +27,8 @@ FS="${NI_FS:-}"                     # ext4|btrfs
 GH_USER="${NI_GITHUB_USER:-r3dg0d}"
 REPOS="${NI_REPOS:-}"               # comma-separated explicit list; empty = fetch from API
 CLONE_REPOS="${NI_CLONE_REPOS:-yes}"
-BUILD_REPOS="${NI_BUILD_REPOS:-yes}"
+SYSTEM_REPOS="${NI_SYSTEM_REPOS:-yes}"  # first boot: post-install.sh builds repos system-wide
+BUILD_REPOS="${NI_BUILD_REPOS:-no}"     # first boot: per-user nix profile mode (legacy)
 TERMINAL="${NI_TERMINAL:-alacritty}" # alacritty|foot (niri default binds Mod+T to alacritty)
 CONFIRM_WIPE="${NI_CONFIRM_WIPE:-}" # unattended: must equal the disk name
 DRY_RUN=no
@@ -54,8 +55,12 @@ Usage: install.sh [options]          (run as root from the NixOS live ISO)
   --github-user NAME      whose public repos to clone (default: r3dg0d)
   --repos a,b,c           explicit repo list instead of querying the GitHub API
   --no-repos              do not clone any repos
+  --system-repos | --no-system-repos
+                          on first boot, run post-install.sh as root: build each repo and add it to
+                          environment.systemPackages via /etc/nixos/r3dg0d-repos.nix (default: on)
   --build-repos | --no-build-repos
-                          install flake packages from cloned repos on first boot (default: on)
+                          on first boot, install flake packages into the user's nix profile
+                          instead/as well (default: off)
   --confirm-wipe DEV      unattended: confirm wiping DEV (must equal --disk)
   --defaults              accept defaults for anything not given (still asks for disk/user/password)
   --dry-run               print the plan and change nothing
@@ -63,7 +68,8 @@ Usage: install.sh [options]          (run as root from the NixOS live ISO)
 
 Every option also has an env var: NI_DISK NI_HOSTNAME NI_USER NI_PASSWORD
 NI_PASSWORD_HASH NI_TIMEZONE NI_LOCALE NI_KEYMAP NI_SWAP_GB NI_LUKS NI_LUKS_PASSWORD
-NI_FS NI_TERMINAL NI_GITHUB_USER NI_REPOS NI_CLONE_REPOS NI_BUILD_REPOS NI_CONFIRM_WIPE.
+NI_FS NI_TERMINAL NI_GITHUB_USER NI_REPOS NI_CLONE_REPOS NI_SYSTEM_REPOS NI_BUILD_REPOS
+NI_CONFIRM_WIPE.
 USAGE
 }
 
@@ -85,6 +91,8 @@ while [ $# -gt 0 ]; do
     --github-user) GH_USER="$2"; shift ;;
     --repos) REPOS="$2"; shift ;;
     --no-repos) CLONE_REPOS=no ;;
+    --system-repos) SYSTEM_REPOS=yes ;;
+    --no-system-repos) SYSTEM_REPOS=no ;;
     --build-repos) BUILD_REPOS=yes ;;
     --no-build-repos) BUILD_REPOS=no ;;
     --confirm-wipe) CONFIRM_WIPE="$2"; shift ;;
@@ -189,7 +197,7 @@ gather() {
   ask FS "Filesystem (ext4/btrfs)" "ext4"
   case "$FS" in ext4|btrfs) ;; *) die "filesystem must be ext4 or btrfs" ;; esac
   case "$TERMINAL" in foot|alacritty) ;; *) die "terminal must be foot or alacritty" ;; esac
-  CLONE_REPOS="$(yesno "$CLONE_REPOS")"; BUILD_REPOS="$(yesno "$BUILD_REPOS")"
+  CLONE_REPOS="$(yesno "$CLONE_REPOS")"; BUILD_REPOS="$(yesno "$BUILD_REPOS")"; SYSTEM_REPOS="$(yesno "$SYSTEM_REPOS")"
   [ "$CLONE_REPOS" = yes ] || BUILD_REPOS=no
 }
 
@@ -218,7 +226,8 @@ ${B}Install plan${N}
   locale      $LOCALE   timezone $TIMEZONE   keymap $KEYMAP
   desktop     niri + SDDM (Wayland), PipeWire, $TERMINAL, fuzzel, waybar, mako, xwayland-satellite
   repos       $( [ "$CLONE_REPOS" = yes ] && echo "clone ${REPOS:-all public non-fork repos of $GH_USER} -> /home/$USERNAME/src" || echo none)
-  repo builds $( [ "$BUILD_REPOS" = yes ] && echo 'install flake packages into the user profile on first boot' || echo no)
+  system pkgs $( [ "$SYSTEM_REPOS" = yes ] && echo 'first boot: post-install.sh builds repos into environment.systemPackages' || echo no)
+  user pkgs   $( [ "$BUILD_REPOS" = yes ] && echo 'first boot: install flake packages into the user profile' || echo no)
 PLAN
 }
 
@@ -406,6 +415,30 @@ write_config() {
   fileSystems."/nix".options = [ "compress=zstd" "noatime" ];
   services.btrfs.autoScrub.enable = true;'
   fi
+  local sysrepos=""
+  if [ "$SYSTEM_REPOS" = yes ]; then
+    local pargs="--github-user $GH_USER"
+    [ -n "$REPOS" ] && pargs="$pargs --repos $REPOS"
+    sysrepos="  # First boot: build ${GH_USER}'s repos and add them system-wide (runs once; re-run
+  # /etc/nixos/r3dg0d-post-install.sh by hand to update). Log: /var/log/r3dg0d-post-install.log
+  systemd.services.r3dg0d-post-install = {
+    description = \"Build repos into environment.systemPackages (r3dg0d nixos-installer)\";
+    wantedBy = [ \"multi-user.target\" ];
+    wants = [ \"network-online.target\" ];
+    after = [ \"network-online.target\" \"nix-daemon.service\" ];
+    path = with pkgs; [ nix git curl coreutils gnused gnugrep gawk findutils bash config.system.build.nixos-rebuild ];
+    environment.NIX_PATH = lib.concatStringsSep \":\" config.nix.nixPath;
+    unitConfig.ConditionPathExists = \"!/var/lib/r3dg0d-installer/system-repos-done\";
+    restartIfChanged = false;
+    serviceConfig = {
+      Type = \"oneshot\";
+      StateDirectory = \"r3dg0d-installer\";
+      TimeoutStartSec = \"infinity\";
+      ExecStart = \"\${pkgs.bash}/bin/bash /etc/nixos/r3dg0d-post-install.sh $pargs\";
+      ExecStartPost = \"\${pkgs.coreutils}/bin/touch /var/lib/r3dg0d-installer/system-repos-done\";
+    };
+  };"
+  fi
   if [ "$BUILD_REPOS" = yes ]; then
     build="  # First boot: install flake packages from ~/src into the user's profile (runs once).
   systemd.services.r3dg0d-install-repos = {
@@ -500,6 +533,8 @@ $btrfsopts
 
 $build
 
+$sysrepos
+
   services.openssh.enable = false;
   system.stateVersion = "$sv";
 }
@@ -518,6 +553,19 @@ write_password() {
   ( umask 077; printf '%s\n' "$PASSWORD_HASH" >"$f" )
 }
 
+POST_URL="${NI_POST_INSTALL_URL:-https://raw.githubusercontent.com/r3dg0d/nixos-installer/main/post-install.sh}"
+fetch_post_install() {
+  local f=/mnt/etc/nixos/r3dg0d-post-install.sh here
+  here="$(dirname "${BASH_SOURCE[0]:-/nonexistent}")"
+  if [ "$DRY_RUN" = yes ]; then printf '  [dry-run] fetch %s -> %s\n' "$POST_URL" "$f" >&2; return 0; fi
+  if [ -f "$here/post-install.sh" ]; then cp "$here/post-install.sh" "$f"
+  elif ! curl -fsSL --max-time 60 "$POST_URL" -o "$f"; then
+    warn "could not download post-install.sh; system-wide repo builds disabled"
+    SYSTEM_REPOS=no; sed -i '/r3dg0d-post-install = {/,/^  };/d' /mnt/etc/nixos/configuration.nix; return 0
+  fi
+  chmod 755 "$f"
+}
+
 # ---------- main ----------
 main() {
   preflight
@@ -534,6 +582,7 @@ main() {
   run nixos-generate-config --root /mnt
   write_config
   write_password
+  if [ "$SYSTEM_REPOS" = yes ]; then fetch_post_install; fi
   REPO_SUMMARY="skipped"
   if [ "$CLONE_REPOS" = yes ]; then clone_repos; [ "$BUILD_REPOS" = yes ] && write_repo_installer; fi
   if [ "$DRY_RUN" = no ] && [ -d "/mnt/home/$USERNAME" ]; then chown -R 1000:100 "/mnt/home/$USERNAME"; fi
@@ -556,7 +605,8 @@ ${G}${B}Done.${N}$( [ "$DRY_RUN" = yes ] && echo ' (dry run — nothing was chan
   host      $HOSTNAME_   user $USERNAME
   desktop   niri via SDDM
   repos     $REPO_SUMMARY  -> /home/$USERNAME/src
-  builds    $( [ "$BUILD_REPOS" = yes ] && echo "first boot: r3dg0d-install-repos.service (log ~/src/install-repos.log)" || echo off)
+  system    $( [ "$SYSTEM_REPOS" = yes ] && echo "first boot: r3dg0d-post-install.service (log /var/log/r3dg0d-post-install.log)" || echo off)
+  user pkgs $( [ "$BUILD_REPOS" = yes ] && echo "first boot: r3dg0d-install-repos.service (log ~/src/install-repos.log)" || echo off)
   config    /etc/nixos/configuration.nix
   log       $( [ "$DRY_RUN" = yes ] && echo "$LOG_TMP" || echo "$LOG_TARGET") 
 $( [ "$DRY_RUN" = yes ] && echo "  preview   /tmp/r3dg0d-installer-configuration.nix" || echo "Remove the ISO and reboot.")
