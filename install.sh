@@ -29,7 +29,9 @@ REPOS="${NI_REPOS:-}"               # comma-separated explicit list; empty = fet
 CLONE_REPOS="${NI_CLONE_REPOS:-yes}"
 SYSTEM_REPOS="${NI_SYSTEM_REPOS:-yes}"  # first boot: post-install.sh builds repos system-wide
 BUILD_REPOS="${NI_BUILD_REPOS:-no}"     # first boot: per-user nix profile mode (legacy)
-TERMINAL="${NI_TERMINAL:-alacritty}" # alacritty|foot (niri default binds Mod+T to alacritty)
+TERMINAL="${NI_TERMINAL:-}"          # ghostty with --rice, otherwise alacritty (niri default Mod+T)
+RICE="${NI_RICE:-yes}"                 # deep-space rice from r3dg0d/dotfiles
+DOTFILES_REPO="${NI_DOTFILES_REPO:-https://github.com/r3dg0d/dotfiles.git}"
 CONFIRM_WIPE="${NI_CONFIRM_WIPE:-}" # unattended: must equal the disk name
 DRY_RUN=no
 ASSUME_DEFAULTS=no
@@ -51,7 +53,10 @@ Usage: install.sh [options]          (run as root from the NixOS live ISO)
   --luks | --no-luks      encrypt root with LUKS2 (default: no)
   --luks-password PW      LUKS passphrase (else prompted)
   --fs ext4|btrfs         default: ext4 (btrfs uses @, @home, @nix subvolumes)
-  --terminal alacritty|foot  default: alacritty (niri's default Mod+T)
+  --terminal ghostty|alacritty|foot
+                          default: ghostty with --rice, else alacritty (niri's default Mod+T)
+  --rice | --no-rice      apply the deep-space rice from github.com/r3dg0d/dotfiles: niri, ghostty,
+                          waybar, fuzzel, mako, fastfetch configs + SDDM theme + wallpaper (default: on)
   --github-user NAME      whose public repos to clone (default: r3dg0d)
   --repos a,b,c           explicit repo list instead of querying the GitHub API
   --no-repos              do not clone any repos
@@ -68,7 +73,7 @@ Usage: install.sh [options]          (run as root from the NixOS live ISO)
 
 Every option also has an env var: NI_DISK NI_HOSTNAME NI_USER NI_PASSWORD
 NI_PASSWORD_HASH NI_TIMEZONE NI_LOCALE NI_KEYMAP NI_SWAP_GB NI_LUKS NI_LUKS_PASSWORD
-NI_FS NI_TERMINAL NI_GITHUB_USER NI_REPOS NI_CLONE_REPOS NI_SYSTEM_REPOS NI_BUILD_REPOS
+NI_FS NI_TERMINAL NI_RICE NI_GITHUB_USER NI_REPOS NI_CLONE_REPOS NI_SYSTEM_REPOS NI_BUILD_REPOS
 NI_CONFIRM_WIPE.
 USAGE
 }
@@ -88,6 +93,8 @@ while [ $# -gt 0 ]; do
     --luks-password) LUKS_PASSWORD="$2"; shift ;;
     --fs) FS="$2"; shift ;;
     --terminal) TERMINAL="$2"; shift ;;
+    --rice) RICE=yes ;;
+    --no-rice) RICE=no ;;
     --github-user) GH_USER="$2"; shift ;;
     --repos) REPOS="$2"; shift ;;
     --no-repos) CLONE_REPOS=no ;;
@@ -196,7 +203,9 @@ gather() {
   if [ "$LUKS" = yes ] && [ "$DRY_RUN" = no ]; then ask_secret LUKS_PASSWORD "LUKS passphrase"; fi
   ask FS "Filesystem (ext4/btrfs)" "ext4"
   case "$FS" in ext4|btrfs) ;; *) die "filesystem must be ext4 or btrfs" ;; esac
-  case "$TERMINAL" in foot|alacritty) ;; *) die "terminal must be foot or alacritty" ;; esac
+  RICE="$(yesno "$RICE")"
+  if [ -z "$TERMINAL" ]; then if [ "$RICE" = yes ]; then TERMINAL=ghostty; else TERMINAL=alacritty; fi; fi
+  case "$TERMINAL" in ghostty|foot|alacritty) ;; *) die "terminal must be ghostty, alacritty or foot" ;; esac
   CLONE_REPOS="$(yesno "$CLONE_REPOS")"; BUILD_REPOS="$(yesno "$BUILD_REPOS")"; SYSTEM_REPOS="$(yesno "$SYSTEM_REPOS")"
   [ "$CLONE_REPOS" = yes ] || BUILD_REPOS=no
 }
@@ -226,6 +235,7 @@ ${B}Install plan${N}
   locale      $LOCALE   timezone $TIMEZONE   keymap $KEYMAP
   desktop     niri + SDDM (Wayland), PipeWire, $TERMINAL, fuzzel, waybar, mako, xwayland-satellite
   repos       $( [ "$CLONE_REPOS" = yes ] && echo "clone ${REPOS:-all public non-fork repos of $GH_USER} -> /home/$USERNAME/src" || echo none)
+  rice        $( [ "$RICE" = yes ] && echo "deep-space from r3dg0d/dotfiles (configs in ~/.config, SDDM theme)" || echo no)
   system pkgs $( [ "$SYSTEM_REPOS" = yes ] && echo 'first boot: post-install.sh builds repos into environment.systemPackages' || echo no)
   user pkgs   $( [ "$BUILD_REPOS" = yes ] && echo 'first boot: install flake packages into the user profile' || echo no)
 PLAN
@@ -417,7 +427,8 @@ write_config() {
   fi
   local sysrepos=""
   if [ "$SYSTEM_REPOS" = yes ]; then
-    local pargs="--github-user $GH_USER"
+    local pargs="--github-user $GH_USER --user $USERNAME"
+    [ "$RICE" = yes ] || pargs="$pargs --no-dotfiles"
     [ -n "$REPOS" ] && pargs="$pargs --repos $REPOS"
     sysrepos="  # First boot: build ${GH_USER}'s repos and add them system-wide (runs once; re-run
   # /etc/nixos/r3dg0d-post-install.sh by hand to update). Log: /var/log/r3dg0d-post-install.log
@@ -466,7 +477,7 @@ write_config() {
 { config, lib, pkgs, ... }:
 
 {
-  imports = [ ./hardware-configuration.nix ];
+  imports = [ ./hardware-configuration.nix$( [ "$RICE" = yes ] && echo " ./r3dg0d-rice.nix") ];
 
 $boot
 $luks
@@ -553,6 +564,31 @@ write_password() {
   ( umask 077; printf '%s\n' "$PASSWORD_HASH" >"$f" )
 }
 
+apply_rice() { # system module + user configs from r3dg0d/dotfiles
+  local dir=/mnt/etc/nixos/r3dg0d-dotfiles home="/mnt/home/$USERNAME"
+  if [ "$DRY_RUN" = yes ]; then
+    printf '  [dry-run] git clone %s %s\n' "$DOTFILES_REPO" "$dir" >&2
+    printf '  [dry-run] write /mnt/etc/nixos/r3dg0d-rice.nix (imports ./r3dg0d-dotfiles/nix/rice.nix)\n' >&2
+    printf '  [dry-run] HOME=%s %s/install.sh  (configs into ~/.config)\n' "$home" "$dir" >&2
+    return 0
+  fi
+  info "applying the deep-space rice"
+  if ! git clone --quiet "$DOTFILES_REPO" "$dir" >>"$LOG_TMP" 2>&1; then
+    warn "could not clone $DOTFILES_REPO; installing without the rice"
+    RICE=no
+    sed -i 's# ./r3dg0d-rice.nix##' /mnt/etc/nixos/configuration.nix
+    return 0
+  fi
+  cat >/mnt/etc/nixos/r3dg0d-rice.nix <<'NIX'
+# deep-space rice (github.com/r3dg0d/dotfiles): packages, fonts and SDDM theme.
+# Update with: sudo /etc/nixos/r3dg0d-post-install.sh   (or git -C /etc/nixos/r3dg0d-dotfiles pull)
+{ imports = [ ./r3dg0d-dotfiles/nix/rice.nix ]; }
+NIX
+  mkdir -p "$home"
+  HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
+    bash "$dir/install.sh" >>"$LOG_TMP" 2>&1 || warn "dotfiles install.sh failed (see $LOG_TMP)"
+}
+
 POST_URL="${NI_POST_INSTALL_URL:-https://raw.githubusercontent.com/r3dg0d/nixos-installer/main/post-install.sh}"
 fetch_post_install() {
   local f=/mnt/etc/nixos/r3dg0d-post-install.sh here
@@ -584,6 +620,7 @@ main() {
   write_password
   if [ "$SYSTEM_REPOS" = yes ]; then fetch_post_install; fi
   REPO_SUMMARY="skipped"
+  if [ "$RICE" = yes ]; then apply_rice; fi
   if [ "$CLONE_REPOS" = yes ]; then clone_repos; [ "$BUILD_REPOS" = yes ] && write_repo_installer; fi
   if [ "$DRY_RUN" = no ] && [ -d "/mnt/home/$USERNAME" ]; then chown -R 1000:100 "/mnt/home/$USERNAME"; fi
   info "running nixos-install (this takes a while)"
@@ -603,7 +640,7 @@ main() {
 ${G}${B}Done.${N}$( [ "$DRY_RUN" = yes ] && echo ' (dry run — nothing was changed)')
   disk      $DISK ($BOOT_MODE, $FS$( [ "$LUKS" = yes ] && echo ', LUKS'))
   host      $HOSTNAME_   user $USERNAME
-  desktop   niri via SDDM
+  desktop   niri via SDDM$( [ "$RICE" = yes ] && echo ", deep-space rice (ghostty)")
   repos     $REPO_SUMMARY  -> /home/$USERNAME/src
   system    $( [ "$SYSTEM_REPOS" = yes ] && echo "first boot: r3dg0d-post-install.service (log /var/log/r3dg0d-post-install.log)" || echo off)
   user pkgs $( [ "$BUILD_REPOS" = yes ] && echo "first boot: r3dg0d-install-repos.service (log ~/src/install-repos.log)" || echo off)

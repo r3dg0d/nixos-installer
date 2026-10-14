@@ -58,7 +58,8 @@ To pin an exact version, replace `main` in the URL with a commit SHA.
 | `--luks` / `--no-luks` | `NI_LUKS` | no | LUKS2-encrypt the root partition |
 | `--luks-password PW` | `NI_LUKS_PASSWORD` | prompt (hidden) | |
 | `--fs ext4\|btrfs` | `NI_FS` | `ext4` | btrfs uses `@`, `@home`, `@nix` subvolumes with zstd |
-| `--terminal alacritty\|foot` | `NI_TERMINAL` | `alacritty` | niri's default config binds `Mod+T` to alacritty |
+| `--terminal ghostty\|alacritty\|foot` | `NI_TERMINAL` | `ghostty` with rice, else `alacritty` | terminal installed for `Mod+T` |
+| `--rice` / `--no-rice` | `NI_RICE` | on | apply the deep-space theme from [r3dg0d/dotfiles](https://github.com/r3dg0d/dotfiles) |
 | `--github-user NAME` | `NI_GITHUB_USER` | `r3dg0d` | Whose public repos to clone |
 | `--repos a,b,c` | `NI_REPOS` | all public non-fork repos | Explicit list instead of the GitHub API |
 | `--no-repos` | `NI_CLONE_REPOS=no` | | Clone nothing |
@@ -87,7 +88,7 @@ sudo NI_PASSWORD='change-me' bash install.sh --disk /dev/nvme0n1 --confirm-wipe 
 3. Formats, mounts and runs `nixos-generate-config --root /mnt`.
 4. Writes `/etc/nixos/configuration.nix` (plain, no flake) with:
    - **niri** (`programs.niri.enable`), **SDDM** with Wayland enabled and niri as the default session
-   - alacritty (or foot), fuzzel, waybar, mako, xwayland-satellite, swaylock/swayidle/swaybg,
+   - ghostty (with the rice; otherwise alacritty or foot), fuzzel, waybar, mako, xwayland-satellite, swaylock/swayidle/swaybg,
      wl-clipboard, grim/slurp, Firefox, xdg-desktop-portal-gtk, polkit, gnome-keyring
    - PipeWire (ALSA/Pulse/JACK), NetworkManager, Bluetooth, redistributable firmware, graphics
    - your user in `wheel`, with the password stored as a hash in
@@ -106,6 +107,17 @@ sudo NI_PASSWORD='change-me' bash install.sh --disk /dev/nvme0n1 --confirm-wipe 
 
 There is no root password; use `sudo` as your user. After boot, edit
 `/etc/nixos/configuration.nix` and run `sudo nixos-rebuild switch`.
+
+## Theme: deep-space
+
+With `--rice` (default) the installer clones [r3dg0d/dotfiles](https://github.com/r3dg0d/dotfiles) to `/etc/nixos/r3dg0d-dotfiles`,
+adds `./r3dg0d-rice.nix` to `configuration.nix` imports (packages, JetBrains Mono Nerd Font, the `deep-space` SDDM theme) and copies
+the niri, ghostty, waybar, fuzzel, mako and fastfetch configs plus the wallpaper into the new user's home. `--no-rice` gives stock niri.
+
+![SDDM deep-space](https://raw.githubusercontent.com/r3dg0d/dotfiles/main/previews/sddm.png)
+![desktop mockup](https://raw.githubusercontent.com/r3dg0d/dotfiles/main/previews/desktop-mockup.png)
+
+(The desktop image is a labeled mockup; the SDDM one is a real greeter render.)
 
 ## post-install.sh: repos system-wide
 
@@ -142,10 +154,18 @@ so they use each repo's own pinned nixpkgs (`flake.lock`); `callPackage` repos u
 channel. If `/etc/nixos` is itself a flake, the script writes the module and tells you to add it
 to your `modules` and rebuild with `--impure`.
 
+### Dotfiles from post-install.sh
+
+`post-install.sh` also installs the rice (`--dotfiles`, default on; `--no-dotfiles` to skip):
+clones or fast-forwards r3dg0d/dotfiles into `/etc/nixos/r3dg0d-dotfiles` (`--dotfiles-dir DIR`), writes `r3dg0d-rice.nix`,
+checks that it evaluates, adds it to imports, runs `nixos-rebuild switch`, then runs the dotfiles `install.sh` as the user
+(`--user NAME`; default is the first normal account with UID >= 1000). Changed files are backed up to
+`~/.config/.dotfiles-backup/<timestamp>/`; unchanged files are skipped, so it is safe to re-run.
+
 ## niri basics
 
 The first time niri starts it writes a default config to `~/.config/niri/config.kdl`.
-`Mod+T` opens alacritty (if you chose foot, change that bind), `Mod+D` opens fuzzel, `Mod+Shift+/` shows the hotkey overlay. Add
+`Mod+T` opens ghostty with the rice (stock niri config: alacritty; if you chose foot, change that bind), `Mod+D` opens fuzzel, `Mod+Shift+/` shows the hotkey overlay. Add
 `spawn-at-startup "waybar"` and `spawn-at-startup "mako"` to that file for a bar and notifications.
 
 ## License
