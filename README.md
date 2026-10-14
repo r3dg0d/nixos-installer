@@ -51,7 +51,7 @@ To pin an exact version, replace `main` in the URL with a commit SHA.
 | `--luks` / `--no-luks` | `NI_LUKS` | no | LUKS2-encrypt the root partition |
 | `--luks-password PW` | `NI_LUKS_PASSWORD` | prompt (hidden) | |
 | `--fs ext4\|btrfs` | `NI_FS` | `ext4` | btrfs uses `@`, `@home`, `@nix` subvolumes with zstd |
-| `--terminal foot\|alacritty` | `NI_TERMINAL` | `foot` | |
+| `--terminal alacritty\|foot` | `NI_TERMINAL` | `alacritty` | niri's default config binds `Mod+T` to alacritty |
 | `--github-user NAME` | `NI_GITHUB_USER` | `r3dg0d` | Whose public repos to clone |
 | `--repos a,b,c` | `NI_REPOS` | all public non-fork repos | Explicit list instead of the GitHub API |
 | `--no-repos` | `NI_CLONE_REPOS=no` | | Clone nothing |
@@ -79,7 +79,7 @@ sudo NI_PASSWORD='change-me' bash install.sh --disk /dev/nvme0n1 --confirm-wipe 
 3. Formats, mounts and runs `nixos-generate-config --root /mnt`.
 4. Writes `/etc/nixos/configuration.nix` (plain, no flake) with:
    - **niri** (`programs.niri.enable`), **SDDM** with Wayland enabled and niri as the default session
-   - foot or alacritty, fuzzel, waybar, mako, xwayland-satellite, swaylock/swayidle/swaybg,
+   - alacritty (or foot), fuzzel, waybar, mako, xwayland-satellite, swaylock/swayidle/swaybg,
      wl-clipboard, grim/slurp, Firefox, xdg-desktop-portal-gtk, polkit, gnome-keyring
    - PipeWire (ALSA/Pulse/JACK), NetworkManager, Bluetooth, redistributable firmware, graphics
    - your user in `wheel`, with the password stored as a hash in
@@ -102,7 +102,7 @@ There is no root password; use `sudo` as your user. After boot, edit
 ## niri basics
 
 The first time niri starts it writes a default config to `~/.config/niri/config.kdl`.
-`Mod+T` opens a terminal, `Mod+D` opens fuzzel, `Mod+Shift+/` shows the hotkey overlay. Add
+`Mod+T` opens alacritty (if you chose foot, change that bind), `Mod+D` opens fuzzel, `Mod+Shift+/` shows the hotkey overlay. Add
 `spawn-at-startup "waybar"` and `spawn-at-startup "mako"` to that file for a bar and notifications.
 
 ## License

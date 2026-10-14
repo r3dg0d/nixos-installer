@@ -28,7 +28,7 @@ GH_USER="${NI_GITHUB_USER:-r3dg0d}"
 REPOS="${NI_REPOS:-}"               # comma-separated explicit list; empty = fetch from API
 CLONE_REPOS="${NI_CLONE_REPOS:-yes}"
 BUILD_REPOS="${NI_BUILD_REPOS:-yes}"
-TERMINAL="${NI_TERMINAL:-foot}"     # foot|alacritty
+TERMINAL="${NI_TERMINAL:-alacritty}" # alacritty|foot (niri default binds Mod+T to alacritty)
 CONFIRM_WIPE="${NI_CONFIRM_WIPE:-}" # unattended: must equal the disk name
 DRY_RUN=no
 ASSUME_DEFAULTS=no
@@ -50,7 +50,7 @@ Usage: install.sh [options]          (run as root from the NixOS live ISO)
   --luks | --no-luks      encrypt root with LUKS2 (default: no)
   --luks-password PW      LUKS passphrase (else prompted)
   --fs ext4|btrfs         default: ext4 (btrfs uses @, @home, @nix subvolumes)
-  --terminal foot|alacritty  default: foot
+  --terminal alacritty|foot  default: alacritty (niri's default Mod+T)
   --github-user NAME      whose public repos to clone (default: r3dg0d)
   --repos a,b,c           explicit repo list instead of querying the GitHub API
   --no-repos              do not clone any repos
