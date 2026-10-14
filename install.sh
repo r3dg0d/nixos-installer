@@ -286,6 +286,8 @@ write_repo_installer() { # first-boot script that installs flake packages into t
 set -uo pipefail
 src="$(cd "$(dirname "$0")" && pwd)"
 logf="$src/install-repos.log"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/r3dg0d-install-repos"   # one file per installed repo (git rev)
+mkdir -p "$state"
 sys="$(nix eval --impure --raw --expr builtins.currentSystem 2>/dev/null || echo x86_64-linux)"
 ok=0; bad=0; skip=0
 echo "=== $(date -Is) install-repos ($sys)" >>"$logf"
@@ -295,9 +297,10 @@ for d in "$src"/*/; do
   if ! nix eval "path:$d#packages.$sys" --apply builtins.attrNames >/dev/null 2>>"$logf"; then
     echo "skip $name: flake has no packages.$sys" >>"$logf"; skip=$((skip+1)); continue
   fi
-  if nix profile list 2>/dev/null | awk -v u="path:$d" '{for(i=1;i<=NF;i++){x=$i; sub(/[?].*/,"",x); if(x==u) f=1}} END{exit !f}'; then echo "ok $name (already installed)" >>"$logf"; ok=$((ok+1)); continue; fi
+  rev="$(git -C "$d" rev-parse HEAD 2>/dev/null || echo unknown)"
+  if [ "$(cat "$state/$name" 2>/dev/null)" = "$rev" ]; then echo "ok $name (already installed at $rev)" >>"$logf"; ok=$((ok+1)); continue; fi
   echo "installing $name ..." | tee -a "$logf"
-  if nix profile install "path:$d" >>"$logf" 2>&1; then ok=$((ok+1)); echo "ok $name" >>"$logf"
+  if nix profile install "path:$d" >>"$logf" 2>&1; then ok=$((ok+1)); echo "ok $name" >>"$logf"; printf '%s\n' "$rev" >"$state/$name"
   else bad=$((bad+1)); echo "FAILED $name" | tee -a "$logf"; fi
 done
 echo "done: installed $ok, failed $bad, skipped $skip" | tee -a "$logf"
