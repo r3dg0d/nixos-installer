@@ -162,6 +162,45 @@ checks that it evaluates, adds it to imports, runs `nixos-rebuild switch`, then 
 (`--user NAME`; default is the first normal account with UID >= 1000). Changed files are backed up to
 `~/.config/.dotfiles-backup/<timestamp>/`; unchanged files are skipped, so it is safe to re-run.
 
+### Build progress, timeouts and logs
+
+Each package is built with `nix build -L`; the full log goes to `/var/log/r3dg0d-post-install/<repo>_<attr>.log`
+and every 30 s a heartbeat line shows the elapsed time and the last log line (Rust and C++ builds can take
+several minutes each). A failed or timed-out build prints its log path and last lines, and the run continues.
+
+| Flag | Env | Default |
+|---|---|---|
+| `--timeout DUR` | `NI_BUILD_TIMEOUT` | `30m` per package (`0` = no limit) |
+| `--jobs N` / `--cores N` | `NI_JOBS` / `NI_CORES` | nix defaults |
+| `--log-dir DIR` | `NI_LOG_DIR` | `/var/log/r3dg0d-post-install` |
+
+Every repo tool that builds also gets a launcher (`r3dg0d-<tool>.desktop`) so it shows up in fuzzel.
+CLI tools open in the terminal with `--help` and leave a shell there. Icons are Papirus names by category:
+privacy (`security-high`), media (`applications-multimedia`), games (`applications-games`), and terminal tools (`utilities-terminal`).
+
+## apps.sh: everyday, gaming, streaming, dev and creative apps
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/r3dg0d/nixos-installer/main/apps.sh | sudo bash
+# pick and choose:
+curl -fsSL https://raw.githubusercontent.com/r3dg0d/nixos-installer/main/apps.sh | sudo bash -s -- --no-creative --add spotify,discord
+```
+
+This writes `/etc/nixos/r3dg0d-apps.nix`, checks that it evaluates together with your config, adds it to the imports once
+(backup `configuration.nix.bak-r3dg0d-apps`) and runs `nixos-rebuild switch`. By default it also runs `post-install.sh`
+(`--no-repos` to skip), so all the repo tools and their launchers come along in `r3dg0d-repos.nix`, with nothing duplicated.
+
+| Category (`--no-X` to drop) | What |
+|---|---|
+| `gaming` | Steam (`programs.steam`; `--steam-remote-play` / `--steam-dedicated` open firewall ports, off by default), GameMode, Lutris, Heroic, ProtonUp-Qt, MangoHud, Prism Launcher, 32-bit graphics |
+| `streaming` | OBS Studio with wlrobs and PipeWire audio capture, Vesktop |
+| `dev` | VS Code, git, gh, rustup, Node.js, Python 3 |
+| `everyday` | Firefox, Thunar, mpv, VLC, imv, btop, grim, slurp, wl-clipboard, GNOME/GTK portals (screen sharing on niri) |
+| `creative` | GIMP, Krita, Blender |
+
+`--add a,b,c` adds any nixpkgs attributes (each is checked first). The module sets `nixpkgs.config.allowUnfree = true` for Steam and VS Code.
+Icons for fuzzel come from `papirus-icon-theme` (the dotfiles' fuzzel uses `icon-theme=Papirus-Dark`).
+
 ## niri basics
 
 The first time niri starts it writes a default config to `~/.config/niri/config.kdl`.

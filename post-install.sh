@@ -23,6 +23,11 @@ DOTFILES="${NI_DOTFILES:-yes}"
 DOTFILES_REPO="${NI_DOTFILES_REPO:-https://github.com/r3dg0d/dotfiles.git}"
 DOTFILES_DIR="${NI_DOTFILES_DIR:-}"
 TARGET_USER="${NI_USER:-}"
+BUILD_TIMEOUT="${NI_BUILD_TIMEOUT:-30m}"   # per package; 0 = no limit
+JOBS="${NI_JOBS:-}"                        # nix --max-jobs
+CORES="${NI_CORES:-}"                      # nix --cores
+HEARTBEAT="${NI_HEARTBEAT:-30}"            # seconds between progress lines
+LOG_DIR="${NI_LOG_DIR:-/var/log/r3dg0d-post-install}"
 
 usage() {
   cat <<USAGE
@@ -40,6 +45,9 @@ post-install.sh: build ${GH_USER}'s public repos and add them to environment.sys
                        system side via /etc/nixos/r3dg0d-rice.nix, user side via its install.sh
   --dotfiles-dir DIR   dotfiles checkout (default: <nixos-dir>/r3dg0d-dotfiles)
   --user NAME          user whose ~/.config gets the dotfiles (default: first user with UID>=1000)
+  --timeout DUR        per-package build limit, e.g. 30m, 2h, 0 = none (default: 30m)
+  --jobs N | --cores N passed to nix as --max-jobs / --cores
+  --log-dir DIR        per-repo build logs (default: /var/log/r3dg0d-post-install)
   --no-switch          generate + verify only; do not touch configuration.nix or rebuild
   --no-host-check      allow running off NixOS / as non-root (testing; implies --no-switch)
   -h, --help
@@ -59,6 +67,10 @@ while [ $# -gt 0 ]; do
     --no-dotfiles) DOTFILES=no ;;
     --user) TARGET_USER="$2"; shift ;;
     --dotfiles-dir) DOTFILES_DIR="$2"; shift ;;
+    --timeout) BUILD_TIMEOUT="$2"; shift ;;
+    --jobs) JOBS="$2"; shift ;;
+    --cores) CORES="$2"; shift ;;
+    --log-dir) LOG_DIR="$2"; shift ;;
     --no-switch) SWITCH=no ;;
     --no-host-check) CHECK_HOST=no; SWITCH=no ;;
     -h|--help) usage; exit 0 ;;
@@ -75,8 +87,9 @@ if [ "$CHECK_HOST" = yes ]; then
   grep -qs '^ID=nixos' /etc/os-release || { echo "this is not NixOS" >&2; exit 1; }
 else
   LOG="${NI_LOG:-/tmp/r3dg0d-post-install.log}"
+  [ -n "${NI_LOG_DIR:-}" ] || LOG_DIR=/tmp/r3dg0d-post-install-logs
 fi
-mkdir -p "$(dirname "$LOG")" "$SRC_DIR"
+mkdir -p "$(dirname "$LOG")" "$SRC_DIR" "$LOG_DIR"
 : >>"$LOG"
 say()  { printf '%s\n' "$*" >&2; printf '%s %s\n' "$(date -Is)" "$*" >>"$LOG"; }
 die()  { say "ERROR: $*"; exit 1; }
@@ -89,6 +102,62 @@ fi
 SYSTEM="$(nix eval --impure --raw --expr builtins.currentSystem)"
 command -v git >/dev/null || die "git is required"
 say "=== post-install for $GH_USER on $SYSTEM (src $SRC_DIR)"
+
+NIXOPTS=()
+[ -n "$JOBS" ] && NIXOPTS+=(--max-jobs "$JOBS")
+[ -n "$CORES" ] && NIXOPTS+=(--cores "$CORES")
+
+# run_build LABEL LOGFILE CMD... : full build log to LOGFILE, a heartbeat line with elapsed time
+# and the last log line every $HEARTBEAT s, killed after $BUILD_TIMEOUT. Out path -> $BUILD_OUT.
+run_build() {
+  local label="$1" blog="$2"; shift 2
+  local outf start pid rc last
+  outf="$(mktemp)"; start=$SECONDS
+  : >"$blog"
+  if [ "$BUILD_TIMEOUT" != 0 ] && command -v timeout >/dev/null; then
+    timeout --kill-after=30s "$BUILD_TIMEOUT" "$@" >"$outf" 2>>"$blog" </dev/null &
+  else
+    "$@" >"$outf" 2>>"$blog" </dev/null &
+  fi
+  pid=$!
+  local next=$((start + HEARTBEAT))
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    if [ "$SECONDS" -ge "$next" ] && kill -0 "$pid" 2>/dev/null; then
+      next=$((SECONDS + HEARTBEAT))
+      last="$(tail -n1 "$blog" 2>/dev/null | cut -c1-100)"
+      printf '  ... %s: %dm%02ds  %s\n' "$label" $(( (SECONDS-start)/60 )) $(( (SECONDS-start)%60 )) "$last" >&2
+    fi
+  done
+  wait "$pid" && rc=0 || rc=$?
+  BUILD_OUT="$(tail -n1 "$outf")"; rm -f "$outf"
+  BUILD_SECS=$((SECONDS - start))
+  return "$rc"
+}
+
+# Papirus icon per category, for the generated launchers
+repo_icon() {
+  case "$1" in
+    blurcam|browserprivacy|dnscheck|fileshred|macrandom|metaclean|mullvadctl|netidentity|opsec-check|privsec-tools) echo security-high ;;
+    ai-media-cli|aivoice|deepfake|fakeperson|MatrixShot|stream-able) echo applications-multimedia ;;
+    nixpresence|vanillaamericamc|*minecraft*|*game*) echo applications-games ;;
+    *) echo utilities-terminal ;;
+  esac
+}
+# add_launcher NAME OUTPATH : a fuzzel-visible .desktop entry when the package ships none
+add_launcher() {
+  local name="$1" out="$2" prog desc
+  [ -d "$out/bin" ] || return 0
+  [ -d "$out/share/applications" ] && { LAUNCHERS+=("$name (ships its own .desktop)"); return 0; }
+  prog="$(find "$out/bin" -maxdepth 1 \( -type f -o -type l \) -printf '%f\n' | sort | awk -v n="$name" 'tolower($0)==tolower(n) {print; f=1; exit} NR==1 {first=$0} END {if (!f) print first}')"
+  [ -n "$prog" ] && [[ "$prog" =~ ^[A-Za-z0-9_.+-]+$ ]] || return 0
+  desc="$name (r3dg0d)"
+  local cmd="$prog --help; exec bash"
+  case "$name" in matrix) cmd="$prog" ;; esac   # interactive TUIs run directly
+  # CLI tools: open a terminal showing --help, then leave a shell there to keep using it
+  DESKTOP+=("    (pkgs.makeDesktopItem { name = \"r3dg0d-$prog\"; desktopName = \"$name\"; comment = \"$desc\"; icon = \"$(repo_icon "$name")\"; terminal = true; categories = [ \"Utility\" ]; exec = \"sh -c '$cmd'\"; })")
+  LAUNCHERS+=("$name -> $prog ($(repo_icon "$name"))")
+}
 
 # ---------- repo list ----------
 list_repos() {
@@ -113,6 +182,7 @@ list_repos() {
 mapfile -t ALL < <(list_repos)
 [ "${#ALL[@]}" -gt 0 ] || die "no repos found"
 
+declare -a DESKTOP=() LAUNCHERS=()
 declare -a INCLUDED=() SKIPPED=() FAILED=() ENTRIES=() MODULE_NOTES=()
 is_default_skip() { [ "$INCLUDE_ALL" = no ] && [ -z "$REPOS" ] && [[ " $SKIP_DEFAULT " == *" $1 "* ]]; }
 
@@ -154,19 +224,26 @@ for name in "${ALL[@]}"; do
   for a in "${attrs[@]}"; do
     if [ "$kind" = flake ]; then
       label="$name#$a"
-      build=(nix build --no-link --print-out-paths "$ref#packages.$SYSTEM.$a")
+      build=(nix build -L --no-link --print-out-paths "${NIXOPTS[@]}" "$ref#packages.$SYSTEM.$a")
       expr="(builtins.getFlake \"$ref\").packages.\${pkgs.stdenv.hostPlatform.system}.\"$a\""
     else
       f="${kind#callPackage:}"; label="$name ($f)"
-      build=(nix-build --no-out-link -E "with import <nixpkgs> {}; callPackage $dir/$f {}")
+      build=(nix-build --no-out-link "${NIXOPTS[@]}" -E "with import <nixpkgs> {}; callPackage $dir/$f {}")
       expr="(pkgs.callPackage $dir/$f { })"
     fi
-    say "building $label ..."
-    if out="$("${build[@]}" 2>>"$LOG" | tail -n1)"; then
+    blog="$LOG_DIR/${label//[^A-Za-z0-9_.-]/_}.log"
+    say "building $label (log: $blog, limit $BUILD_TIMEOUT) ..."
+    if run_build "$label" "$blog" "${build[@]}"; then
+      out="$BUILD_OUT"
       INCLUDED+=("$label -> $out"); ENTRIES+=("    $expr  # $label")
-      say "ok $label"
+      say "ok $label (${BUILD_SECS}s)"
+      [ "$a" = default ] || [ "$a" = _ ] || [ "${#attrs[@]}" -eq 1 ] && add_launcher "$name" "$out"
     else
-      FAILED+=("$label (build failed; see $LOG)"); say "FAILED $label: build"
+      rc=$?
+      why="build failed"; [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] && why="timed out after $BUILD_TIMEOUT"
+      FAILED+=("$label ($why; log: $blog)"); say "FAILED $label: $why after ${BUILD_SECS}s; last lines of $blog:"
+      tail -n 15 "$blog" | sed 's/^/    /' >&2
+      { echo "--- $label ($why)"; tail -n 50 "$blog"; } >>"$LOG"
     fi
   done
 done
@@ -181,6 +258,7 @@ tmp="$(mktemp)"
   echo "  nix.settings.experimental-features = [ \"nix-command\" \"flakes\" ];"
   echo "  environment.systemPackages = ["
   if [ "${#ENTRIES[@]}" -gt 0 ]; then printf '%s\n' "${ENTRIES[@]}"; fi
+  if [ "${#DESKTOP[@]}" -gt 0 ]; then echo "    # launchers for fuzzel"; printf '%s\n' "${DESKTOP[@]}"; fi
   echo "  ];"
   for n in "${MODULE_NOTES[@]}"; do echo "  # $n"; done
   echo "}"
@@ -274,6 +352,7 @@ fi
   echo "Dotfiles: $DOTFILES_STATUS"
   echo "Included (${#INCLUDED[@]}):"; for x in "${INCLUDED[@]}"; do echo "  + $x"; done
   echo "Skipped (${#SKIPPED[@]}):";   for x in "${SKIPPED[@]}";  do echo "  - $x"; done
+  echo "Launchers (${#LAUNCHERS[@]}):"; for x in "${LAUNCHERS[@]}"; do echo "  > $x"; done
   echo "Failed (${#FAILED[@]}):";     for x in "${FAILED[@]}";   do echo "  ! $x"; done
   for n in "${MODULE_NOTES[@]}"; do echo "  note: $n"; done
   echo "Module: $MODULE_OUT   Log: $LOG"
