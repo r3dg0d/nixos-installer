@@ -109,6 +109,12 @@ run()  {
   "$@" >>"$LOG_TMP" 2>&1 || die "command failed: $* (see $LOG_TMP)"
 }
 
+try_run() { # like run, but failure is fine (cleanup steps)
+  log "+ $* (failure ok)"
+  if [ "$DRY_RUN" = yes ]; then printf '  [dry-run] %s\n' "$*" >&2; return 0; fi
+  "$@" >>"$LOG_TMP" 2>&1 || true
+}
+
 # Prompts read from the terminal so the script works when piped from curl.
 TTY=/dev/tty
 have_tty() { [ -r "$TTY" ] && [ -w "$TTY" ] && { : <"$TTY"; } 2>/dev/null; }
@@ -303,8 +309,9 @@ SCRIPT
 # ---------- disk ----------
 partition_and_mount() {
   info "partitioning $DISK"
-  run swapoff -a
-  run umount -R /mnt
+  try_run swapoff -a
+  if mountpoint -q /mnt 2>/dev/null; then run umount -R /mnt; fi
+  [ -e /dev/mapper/cryptroot ] && try_run cryptsetup close cryptroot
   run wipefs -af "$DISK"
   run parted -s "$DISK" mklabel gpt
   local start=1
